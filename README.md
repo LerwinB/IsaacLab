@@ -1,100 +1,53 @@
-![Isaac Lab](docs/source/_static/isaaclab.jpg)
+## IsaacLab
+[documentation page](https://isaac-sim.github.io/IsaacLab)
 
----
+[documentation page cn](https://docs.robotsfan.com/isaaclab/index.html)
 
-# Isaac Lab
+## Git
+http://172.17.175.66:3000/ShengyunZhao/IsaacLab.git
 
-[![IsaacSim](https://img.shields.io/badge/IsaacSim-4.5.0-silver.svg)](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html)
-[![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://docs.python.org/3/whatsnew/3.10.html)
-[![Linux platform](https://img.shields.io/badge/platform-linux--64-orange.svg)](https://releases.ubuntu.com/20.04/)
-[![Windows platform](https://img.shields.io/badge/platform-windows--64-orange.svg)](https://www.microsoft.com/en-us/)
-[![pre-commit](https://img.shields.io/github/actions/workflow/status/isaac-sim/IsaacLab/pre-commit.yaml?logo=pre-commit&logoColor=white&label=pre-commit&color=brightgreen)](https://github.com/isaac-sim/IsaacLab/actions/workflows/pre-commit.yaml)
-[![docs status](https://img.shields.io/github/actions/workflow/status/isaac-sim/IsaacLab/docs.yaml?label=docs&color=brightgreen)](https://github.com/isaac-sim/IsaacLab/actions/workflows/docs.yaml)
-[![License](https://img.shields.io/badge/license-BSD--3-yellow.svg)](https://opensource.org/licenses/BSD-3-Clause)
-[![License](https://img.shields.io/badge/license-Apache--2.0-yellow.svg)](https://opensource.org/license/apache-2-0)
-
-
-**Isaac Lab** is a GPU-accelerated, open-source framework designed to unify and simplify robotics research workflows, such as reinforcement learning, imitation learning, and motion planning. Built on [NVIDIA Isaac Sim](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html), it combines fast and accurate physics and sensor simulation, making it an ideal choice for sim-to-real transfer in robotics.
-
-Isaac Lab provides developers with a range of essential features for accurate sensor simulation, such as RTX-based cameras, LIDAR, or contact sensors. The framework's GPU acceleration enables users to run complex simulations and computations faster, which is key for iterative processes like reinforcement learning and data-intensive tasks. Moreover, Isaac Lab can run locally or be distributed across the cloud, offering flexibility for large-scale deployments.
-
-## Key Features
-
-Isaac Lab offers a comprehensive set of tools and environments designed to facilitate robot learning:
-- **Robots**: A diverse collection of robots, from manipulators, quadrupeds, to humanoids, with 16 commonly available models.
-- **Environments**: Ready-to-train implementations of more than 30 environments, which can be trained with popular reinforcement learning frameworks such as RSL RL, SKRL, RL Games, or Stable Baselines. We also support multi-agent reinforcement learning.
-- **Physics**: Rigid bodies, articulated systems, deformable objects
-- **Sensors**: RGB/depth/segmentation cameras, camera annotations, IMU, contact sensors, ray casters.
-
-
-## Getting Started
-
-Our [documentation page](https://isaac-sim.github.io/IsaacLab) provides everything you need to get started, including detailed tutorials and step-by-step guides. Follow these links to learn more about:
-
-- [Installation steps](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html#local-installation)
-- [Reinforcement learning](https://isaac-sim.github.io/IsaacLab/main/source/overview/reinforcement-learning/rl_existing_scripts.html)
-- [Tutorials](https://isaac-sim.github.io/IsaacLab/main/source/tutorials/index.html)
-- [Available environments](https://isaac-sim.github.io/IsaacLab/main/source/overview/environments.html)
-
-
-## Contributing to Isaac Lab
-
-We wholeheartedly welcome contributions from the community to make this framework mature and useful for everyone.
-These may happen as bug reports, feature requests, or code contributions. For details, please check our
-[contribution guidelines](https://isaac-sim.github.io/IsaacLab/main/source/refs/contributing.html).
-
-## Show & Tell: Share Your Inspiration
-
-We encourage you to utilize our [Show & Tell](https://github.com/isaac-sim/IsaacLab/discussions/categories/show-and-tell) area in the
-`Discussions` section of this repository. This space is designed for you to:
-
-* Share the tutorials you've created
-* Showcase your learning content
-* Present exciting projects you've developed
-
-By sharing your work, you'll inspire others and contribute to the collective knowledge
-of our community. Your contributions can spark new ideas and collaborations, fostering
-innovation in robotics and simulation.
-
-## Troubleshooting
-
-Please see the [troubleshooting](https://isaac-sim.github.io/IsaacLab/main/source/refs/troubleshooting.html) section for
-common fixes or [submit an issue](https://github.com/isaac-sim/IsaacLab/issues).
-
-For issues related to Isaac Sim, we recommend checking its [documentation](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/overview.html)
-or opening a question on its [forums](https://forums.developer.nvidia.com/c/agx-autonomous-machines/isaac/67).
-
-## Support
-
-* Please use GitHub [Discussions](https://github.com/isaac-sim/IsaacLab/discussions) for discussing ideas, asking questions, and requests for new features.
-* Github [Issues](https://github.com/isaac-sim/IsaacLab/issues) should only be used to track executable pieces of work with a definite scope and a clear deliverable. These can be fixing bugs, documentation issues, new features, or general updates.
-
-## Connect with the NVIDIA Omniverse Community
-
-Have a project or resource you'd like to share more widely? We'd love to hear from you! Reach out to the
-NVIDIA Omniverse Community team at OmniverseCommunity@nvidia.com to discuss potential opportunities
-for broader dissemination of your work.
-
-Join us in building a vibrant, collaborative ecosystem where creativity and technology intersect. Your
-contributions can make a significant impact on the Isaac Lab community and beyond!
-
-## License
-
-The Isaac Lab framework is released under [BSD-3 License](LICENSE). The `isaaclab_mimic` extension and its corresponding standalone scripts are released under [Apache 2.0](LICENSE-mimic). The license files of its dependencies and assets are present in the [`docs/licenses`](docs/licenses) directory.
-
-## Acknowledgement
-
-Isaac Lab development initiated from the [Orbit](https://isaac-orbit.github.io/) framework. We would appreciate if you would cite it in academic publications as well:
-
+跨设备需要修改的路径 
+1. `source\isaaclab\isaaclab\utils\assets.py`，NUCLEUS_ASSET_ROOT_DIR
+2. `source\isaaclab_assets\isaaclab_assets\robots\frankahand.py`, ASSET_DIR
+上传文件
+```shell
+scp -r Assets\Robots\FrankanoHand  buaa22@172.17.135.244:/home/buaa22/Software/zhaoshengyun/IsaacLab-main/Assets/Isaac/IsaacLab/Robots/FrankaNoHand
 ```
-@article{mittal2023orbit,
-   author={Mittal, Mayank and Yu, Calvin and Yu, Qinxi and Liu, Jingzhou and Rudin, Nikita and Hoeller, David and Yuan, Jia Lin and Singh, Ritvik and Guo, Yunrong and Mazhar, Hammad and Mandlekar, Ajay and Babich, Buck and State, Gavriel and Hutter, Marco and Garg, Animesh},
-   journal={IEEE Robotics and Automation Letters},
-   title={Orbit: A Unified Simulation Framework for Interactive Robot Learning Environments},
-   year={2023},
-   volume={8},
-   number={6},
-   pages={3740-3747},
-   doi={10.1109/LRA.2023.3270034}
-}
+## scripts
+
+```shell
+# import urdf
+python scripts/tools/convert_urdf.py Assets\nohand2arm_description\urdf\hand2arm.urdf Assets\Robots\FrankanoHand\FrankanoHand.usd --fix-base
 ```
+```shell 
+# tele operate
+python scripts\environments\teleoperation\teleop_se3_agent.py --task Isaac-Reach-Franka-IK-Rel-v0
+```
+```shell
+# train 
+python scripts/reinforcement_learning/rl_games/train.py --task Isaac-Reach-Frankahand-v0 --headless
+CUDA_VISIBLE_DEVICES=1 python scripts/reinforcement_learning/rl_games/train.py --task Isaac-Repose-Cube-Franka-Direct-v0 --headless
+
+python scripts/reinforcement_learning/rl_games/play.py --task Isaac-Reach-Frankahand-v0 --headless --video --video_length 200 --checkpoint logs/rl_games/reach_franka/2025-03-21_15-17-20/nn/last_reach_franka_ep_1000_rew__-451756.9_.pth
+```
+
+## task1 reach
+### 内容
+1. 换机械臂
+2. RL训不出来
+3. 遥操作手部一直在随机乱动，**直接影响后续操作**
+    1. 灵巧手手指有问题，除了中指，其他手指存在就会导致机械臂乱动
+
+## task2 grasp
+### 内容
+1. 改造shadowhand inhand_manipulation 转方块代码
+    1. code dir 
+    ```shell
+    source\isaaclab_tasks\isaaclab_tasks\direct\franka_hand
+    source\isaaclab_tasks\isaaclab_tasks\direct\hand_grasp
+    ```
+2. 只保留中指和手掌，训练其触碰方块
+    1. reward: 修改成功判定为方块移动一定的距离，
+    2. obs=80, action=11
+    3. 未知原因，场景总是重置(绝对坐标要转换为场景坐标)
+
