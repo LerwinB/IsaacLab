@@ -77,10 +77,12 @@ FRANKA_PANDA_CFG = ArticulationCfg(
 
 FRANKA_PANDA_HIGH_PD_CFG = FRANKA_PANDA_CFG.copy()
 FRANKA_PANDA_HIGH_PD_CFG.spawn.rigid_props.disable_gravity = True
-FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_shoulder"].stiffness = 400.0
-FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_shoulder"].damping = 80.0
-FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_forearm"].stiffness = 400.0
-FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_forearm"].damping = 80.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_shoulder"].stiffness = 100.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_shoulder"].damping = 40.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_forearm"].stiffness = 100.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_forearm"].damping = 40.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_hand"].stiffness = 20.0
+FRANKA_PANDA_HIGH_PD_CFG.actuators["panda_hand"].damping = 5.0
 """Configuration of Franka Emika Panda robot with stiffer PD control.
 
 This configuration is useful for task-space control using differential IK.

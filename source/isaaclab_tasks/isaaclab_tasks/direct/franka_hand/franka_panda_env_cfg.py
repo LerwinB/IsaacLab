@@ -140,7 +140,7 @@ class FrankaPandaEnvCfg(DirectRLEnvCfg):
         ),
     )
     # robot
-    robot_cfg: ArticulationCfg = FRANKA_PANDA_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
+    robot_cfg: ArticulationCfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.0),
             rot=(1.0, 0.0, 0.0, 0.0),
@@ -242,7 +242,7 @@ class FrankaPandaEnvCfg(DirectRLEnvCfg):
     fall_penalty = 0
     fall_dist = 1.0
     vel_obs_scale = 0.2
-    success_tolerance = 0.1
+    success_tolerance = 0.02
     max_consecutive_success = 0
     av_factor = 0.1
     act_moving_average = 1.0

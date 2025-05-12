@@ -123,6 +123,7 @@ class PandaGraspEnv(DirectRLEnv):
         self.ee_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
         self.ee_pos_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.ee_reach_target_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        self.initial_object_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
 
         # Jacobian 索引（如果是固定底座，PhysX 不包含 root link）
         if self.hand.is_fixed_base:
@@ -140,8 +141,13 @@ class PandaGraspEnv(DirectRLEnv):
         )
         self.ee_marker = VisualizationMarkers(marker_cfg)
         self.target_marker = VisualizationMarkers(marker_cfg)
+        self.goal_markers = VisualizationMarkers(marker_cfg)
 
         self.offset_local = torch.tensor([0.0, 0.0, 0.1034], device=self.device)  # 例如 +0.1m
+
+        self.episode_count_buf = torch.zeros((self.num_envs,), device=self.device, dtype=torch.long)
+        self.prev_gripper_closed = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+
 
 
     def _setup_scene(self):
@@ -162,8 +168,9 @@ class PandaGraspEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
         self.prev_object_pos = self.object_pos.clone()
-        self.prev_ee_pos = self.ee_pos.clone()
+        self.prev_ee_pos = self.ee_pos_target.clone()
         self.prev_gripper_pos = self.gripper_joint_pos.clone()
+
         # self.actions = torch.zeros_like(actions)
 
     def _apply_action(self) -> None:
@@ -202,15 +209,56 @@ class PandaGraspEnv(DirectRLEnv):
         self.hand.set_joint_position_target(joint_pos_des, joint_ids=self.ik_joint_ids)
 
         # --- 控制夹爪 ---
-        # gripper_open = (gripper_act > 0.0).float().unsqueeze(-1)
-        gripper_open = gripper_act >0.0
+        
+            
+        aligned = torch.norm(self.ee_pos_target - self.object_pos,dim=-1) < 0.01
+        gripper_act_now = self.actions[:, -1]  # policy输出
+        closing_threshold = 0.5
+        opening_threshold = -0.5
+
+        # self.prev_gripper_closed 必须初始化过（在env初始化时，全0或全1）
+        # 比如 self.prev_gripper_closed = torch.zeros((num_envs,), dtype=torch.bool, device=device)
+        prev_gripper_closed = self.prev_gripper_closed
+
+        # 滞后判断：根据之前是开/关，使用不同的 threshold
+        gripper_closed_now = torch.where(
+            prev_gripper_closed,
+            gripper_act_now < opening_threshold,  # was closed，保持关，除非特别开
+            gripper_act_now > closing_threshold   # was open，需要超过threshold才关
+        )
+        self.prev_gripper_closed = gripper_closed_now  # 更新状态
+
+
         open_pos = 0.04
         close_pos = 0.0
-        # gripper_target = gripper_open * open_pos + (1.0 - gripper_open) * close_pos
+        use_hardcode = (self.episode_count_buf > 5) & (self.episode_count_buf < 10)
+
+        # 先计算两种gripper_target
+        gripper_target_hardcode = torch.where(
+            aligned.unsqueeze(-1),
+            torch.full_like(gripper_closed_now.unsqueeze(-1), close_pos, dtype=torch.float),
+            torch.full_like(gripper_closed_now.unsqueeze(-1), open_pos, dtype=torch.float)
+        )
+
+        gripper_target_policy = torch.where(
+            gripper_closed_now.unsqueeze(-1),
+            torch.full_like(gripper_closed_now.unsqueeze(-1), close_pos, dtype=torch.float),
+            torch.full_like(gripper_closed_now.unsqueeze(-1), open_pos, dtype=torch.float)
+        )
+
+        # 选择不同来源的 gripper_target
         gripper_target = torch.where(
-            gripper_open.unsqueeze(-1),  # [num_envs, 1]
-            torch.full_like(gripper_open.unsqueeze(-1), open_pos,dtype=torch.float),
-            torch.full_like(gripper_open.unsqueeze(-1), close_pos, dtype=torch.float)
+            use_hardcode.unsqueeze(-1),  # broadcast到 [num_envs, 1]
+            gripper_target_hardcode,
+            gripper_target_policy
+        )
+
+        # 同样控制 action（注意，只影响 gripper维度）
+        # imitation阶段 action取 aligned，探索阶段 action取 policy输出
+        self.actions[:, -1] = torch.where(
+            use_hardcode,
+            aligned.float() * 2.0 - 1.0,       # imitation时直接根据 aligned
+            self.actions[:, -1]  # 探索时根据 policy输出 (也可以直接 gripper_close)
         )
         gripper_target_all = gripper_target.repeat(1, 2)
         self.hand.set_joint_position_target(gripper_target_all, joint_ids=self.actuated_dof_indices)
@@ -228,6 +276,9 @@ class PandaGraspEnv(DirectRLEnv):
             root_pose_w[:, 0:3], root_pose_w[:, 3:7],
             self.object_pos, self.ee_reach_target_quat)
         self.target_marker.visualize(object_pos, object_quat,
+            marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        )
+        self.goal_markers.visualize(self.goal_pos + self.scene.env_origins, self.goal_rot,
             marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         )
 
@@ -296,6 +347,7 @@ class PandaGraspEnv(DirectRLEnv):
             self.cfg.dist_reward_scale,
             self.cfg.rot_reward_scale,
             self.cfg.rot_eps,
+            self.episode_length_buf,
             self.actions,
             self.cfg.action_penalty_scale,
             self.cfg.success_tolerance,
@@ -308,6 +360,7 @@ class PandaGraspEnv(DirectRLEnv):
         if "log" not in self.extras:
             self.extras["log"] = dict()
         self.extras["log"]["consecutive_successes"] = self.consecutive_successes.mean()
+        self.extras["log"]["mean_episode_count"] = self.episode_count_buf.float().mean()
 
         for key, value in reward_terms.items():
             self.extras["log"][f"reward/{key}"] = value.mean()
@@ -323,12 +376,12 @@ class PandaGraspEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # reset when cube has fallen
-        goal_dist = torch.norm(self.ee_pos - self.in_hand_pos, p=2, dim=-1)
+        goal_dist = torch.norm(self.object_pos - self.goal_pos, p=2, dim=-1)
         out_of_reach = goal_dist >= self.cfg.fall_dist
 
         if self.cfg.max_consecutive_success > 0:
             # Reset progress (episode length buf) on goal envs if max_consecutive_success > 0
-            move_dist = torch.norm(self.object_pos - self.in_hand_pos, p=2, dim=-1)
+            move_dist = torch.norm(self.object_pos - self.ee_pos, p=2, dim=-1)
             self.episode_length_buf = torch.where(
                 move_dist >= self.cfg.success_tolerance,
                 torch.zeros_like(self.episode_length_buf),
@@ -346,7 +399,7 @@ class PandaGraspEnv(DirectRLEnv):
             env_ids = self.hand._ALL_INDICES
         # resets articulation and rigid body attributes
         super()._reset_idx(env_ids)
-
+        self.episode_count_buf[env_ids] += 1
         # reset goals
         # self._reset_target_pose(env_ids)
 
@@ -367,7 +420,19 @@ class PandaGraspEnv(DirectRLEnv):
         self.object.write_root_pose_to_sim(object_default_state[:, :7], env_ids)
         self.object.write_root_velocity_to_sim(object_default_state[:, 7:], env_ids)
         # 获取当前物体重置后的初始位置（world 坐标）
-        self.initial_object_pos = self.object.data.root_pos_w.clone()  # [num_envs, 3]
+        # self.initial_object_pos = self.object.data.root_pos_w.clone() - self.scene.env_origins  # [num_envs, 3]
+        self.initial_object_pos[env_ids] = object_default_state[:, 0:3] - self.scene.env_origins[env_ids]
+
+        pos_x = sample_uniform(0.4, 0.6, (len(env_ids), 1), device=self.device)
+        pos_y = sample_uniform(-0.25, 0.25, (len(env_ids), 1), device=self.device)
+        pos_z = sample_uniform(0.25, 0.5, (len(env_ids), 1), device=self.device)
+
+        new_goal_pos = torch.cat([pos_x, pos_y, pos_z], dim=-1)  # shape: (N, 3)
+
+        # 2. 加上各自的 env origin
+        self.goal_pos[env_ids] = new_goal_pos
+
+
         arm_default_pos = torch.tensor(
             [0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.8], device=self.device  # panda_arm 常见初始位姿
         ).unsqueeze(0).repeat(len(env_ids), 1)
@@ -660,6 +725,7 @@ def compute_rewards(
     dist_reward_scale: float,
     rot_reward_scale: float,
     rot_eps: float,
+    progress_step: torch.Tensor,
     actions: torch.Tensor,
     action_penalty_scale: float,
     success_tolerance: float,
@@ -684,7 +750,7 @@ def compute_rewards(
     sigma = 0.3  # 弧度，约 17°
     rot_reward = 2.0 * torch.exp(-angle_diff**2 / (2 * sigma**2))   
 
-    alignment_thresh = 0.01  # 可调，比如 2cm
+    alignment_thresh = 0.02  # 可调，比如 2cm
 
     aligned_pos = torch.norm(ee_pos_target - object_pos, dim=-1) < alignment_thresh  # [N] bool
     aligned_rot = angle_diff < 0.3
@@ -692,42 +758,52 @@ def compute_rewards(
 
     action_penalty = torch.sum(actions**2, dim=-1)
     move_dist = torch.norm(object_pos - inital_object_pos, p=2, dim=-1)
-    move_reward = move_dist
+    # move_reward = move_dist
+    move_reward = 5.0 * torch.tanh(move_dist / 0.01) #距离 ~0.1m 时趋于 5.0
     lift_dist  = torch.norm(goal_pos - object_pos, p=2, dim=-1)
-    lift_reward = 20.0 * (1.0 - torch.tanh(lift_dist / 0.1))
+    lift_reward = 50.0 * (1.0 - torch.tanh(lift_dist / 0.1))
     
     
     offset_now = object_pos - ee_pos_target
     offset_prev = prev_object_pos - prev_ee_pos
     offset_diff = torch.norm(offset_now - offset_prev, dim=-1)
-    grabbed_by_offset = offset_diff < 0.01
+    grabbed_by_offset = offset_diff < 0.001
     aperture_now = torch.sum(gripper_joint_pos, dim=-1)
     aperture_prev = torch.sum(prev_gripper_pos, dim=-1)
     aperture_change = torch.abs(aperture_now - aperture_prev)
-    grabbed_by_aperture = aperture_change < 0.005
+    grabbed_by_aperture = aperture_change < 0.001
 
-    within_grab_range = (aperture_now > 0.02) & (aperture_now < 0.06)&(move_dist > 0.05)
-    grabbed = aligned & grabbed_by_offset & grabbed_by_aperture & within_grab_range
+    within_grab_range = (aperture_now > 0.02) & (aperture_now < 0.06) &(move_dist > 0.01)
+    # grabbed = aligned & grabbed_by_offset & grabbed_by_aperture & within_grab_range
+    grabbed = aligned & within_grab_range & grabbed_by_aperture & grabbed_by_offset
     # grab_reward = grabbed.float() * 5
 
     close_enough = goal_dist < 0.001
     gripper_open = ~((aperture_now > 0.02) & (aperture_now < 0.06))
-    no_movement = torch.norm(object_pos - inital_object_pos, dim=-1) < 0.01
-    near_but_not_grabbing = close_enough & gripper_open & no_movement
+    # no_movement = torch.norm(object_pos - inital_object_pos, dim=-1) < 0.01
+    near_and_trying = aligned & (aperture_change > 0.01)
+    near_but_not_grabbing = aligned & (~grabbed)
+    penalty_scale = 0.01 * progress_step
+    ngrab_reward = penalty_scale * near_but_not_grabbing.float() * -1.0
+    # near_bnot_aligned = ~aligned & (goal_dist < 0.05)
+    # align_reward = penalty_scale * aligned.float() * 1.0
     gripper_act_change = torch.abs(aperture_now - aperture_prev)
     gripper_action_rew = 1.0 * gripper_act_change
+    grab_bnot_aligned = ~aligned & (aperture_now < 0.06)
     # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
     # reward = dist_rew + rot_rew + reach_rew +z_align_reward + action_penalty * action_penalty_scale
-    reward = reach_rew +reach_rew1+ rot_reward+ lift_reward + action_penalty * action_penalty_scale
+    reward = reach_rew +reach_rew1+ rot_reward+move_reward+ lift_reward +ngrab_reward+action_penalty * action_penalty_scale
     # no_movement = torch.norm(object_pos - prev_object_pos, dim=-1) < 1e-4
+    reward = torch.where(grab_bnot_aligned, reward - 5.0, reward)
     reward = torch.where(aligned_pos, reward + 20.0, reward)
     reward = torch.where(aligned_rot, reward + 5.0, reward)
-    reward = torch.where(no_movement, reward - 2.0, reward)
-    reward = torch.where(near_but_not_grabbing, reward - 2.0, reward)
-    reward = torch.where((~aligned) & (grabbed_by_aperture), reward - 2.0, reward)
+    # reward = torch.where(no_movement, reward - 2.0, reward)
+    # reward = torch.where(near_but_not_grabbing, reward - 10.0, reward)
+    # reward = torch.where((~aligned) & (grabbed_by_aperture), reward - 2.0, reward)
     # grabbed bonus
-    reward = torch.where(grabbed, reward+50.0, reward)
+    reward = torch.where(grabbed, reward+30.0, reward)
     # Find out which envs hit the goal and update successes count
+    reward = torch.where(torch.abs(lift_dist) <= 0.05, reward + 50.0, reward)
     goal_resets = torch.where(torch.abs(lift_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
     successes = successes + goal_resets
 
@@ -754,8 +830,12 @@ def compute_rewards(
     "reach_rew": reach_rew,
     "rot_reward": rot_reward,
     "reach_rew1": reach_rew1,
+    "move_reward": move_reward,
     "lift_reward": lift_reward,
-    "grabbed_bonus": grabbed.float() * 10.0,
-    "aligned_bonus": aligned_pos.float() * 5.0,
+    "grabbed_bonus": grabbed.float() * 30.0,
+    "aligned_bonus": aligned_pos.float() * 20.0,
+    "ngrab_reward": ngrab_reward, 
+    # "near_but_not_grabbing_bonus": near_but_not_grabbing.float() * -5.0,
+    "grab_bnot_aligned_bonus": grab_bnot_aligned.float() * -5.0,
     "action_penalty": action_penalty * action_penalty_scale,
 }

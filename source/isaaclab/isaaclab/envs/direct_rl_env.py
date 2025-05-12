@@ -283,6 +283,7 @@ class DirectRLEnv(gym.Env):
         if seed is not None:
             self.seed(seed)
 
+
         # reset state of scene
         indices = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
         self._reset_idx(indices)

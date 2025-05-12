@@ -359,6 +359,11 @@ systemctl restart auth-client
 ---
 
 ### 🌍 配置网络代理（用户自选）
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+```
 
 部分用户如需访问国外资源（如 GitHub、PyPI、Hugging Face），可**自行配置本地代理客户端**（如 Clash、V2Ray、Shadowsocks 等）并设置用户环境变量。
 **不要设置全系统的环境变量**
