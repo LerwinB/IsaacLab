@@ -231,7 +231,7 @@ class PandaGraspEnv(DirectRLEnv):
 
         open_pos = 0.04
         close_pos = 0.0
-        use_hardcode = (self.episode_count_buf > 5) & (self.episode_count_buf < 10)
+        use_hardcode = (self.episode_count_buf > 5) & (self.episode_count_buf < 8)
 
         # 先计算两种gripper_target
         gripper_target_hardcode = torch.where(
@@ -417,6 +417,12 @@ class PandaGraspEnv(DirectRLEnv):
         )
 
         object_default_state[:, 7:] = torch.zeros_like(self.object.data.default_root_state[env_ids, 7:])
+        # 添加一个角速度扰动：每个维度在 [-0.5, 0.5] 范围内
+        ang_vel_noise = 0.5 * (2.0 * torch.rand((len(env_ids), 3), device=self.device) - 1.0)
+
+        # 设置 linear velocity 为 0，angular velocity 为随机值
+        object_default_state[:, 10:13] = ang_vel_noise  # angular velocity
+
         self.object.write_root_pose_to_sim(object_default_state[:, :7], env_ids)
         self.object.write_root_velocity_to_sim(object_default_state[:, 7:], env_ids)
         # 获取当前物体重置后的初始位置（world 坐标）
