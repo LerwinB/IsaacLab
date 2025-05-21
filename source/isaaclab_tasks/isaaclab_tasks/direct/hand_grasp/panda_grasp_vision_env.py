@@ -11,15 +11,24 @@ import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+import omni.usd
+
+# from Isaac Sim 4.2 onwards, pxr.Semantics is deprecated
+try:
+    import Semantics
+except ModuleNotFoundError:
+    from pxr import Semantics
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import TiledCamera, TiledCameraCfg
+from isaaclab.utils import configclass
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate, quat_apply
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import subtract_frame_transforms, combine_frame_transforms
@@ -29,6 +38,7 @@ import isaacsim.core.utils.torch as torch_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import isaaclab.sim as sim_utils
+from ..franka_hand.feature_extractor import FeatureExtractor, FeatureExtractorCfg
 
 if TYPE_CHECKING:
     from isaaclab_tasks.direct.franka_hand.franka_hand_env_cfg import FrankaHandEnvCfg
@@ -66,13 +76,17 @@ class FrankaPandaVisionEnvPlayCfg(FrankaPandaVisionEnvCfg):
 
 
 
-class PandaGraspEnv(DirectRLEnv):
-    cfg: FrankaPandaEnvCfg | FrankaHandEnvCfg
+class PandaGraspVisonEnv(DirectRLEnv):
+    cfg: FrankaPandaVisionEnvCfg
 
-    def __init__(self, cfg: FrankaPandaEnvCfg | FrankaHandEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: FrankaPandaVisionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        self.feature_extractor = FeatureExtractor(self.cfg.feature_extractor, self.device)
         self.num_hand_dofs = self.hand.num_joints#27
+        self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
+        self.goal_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
+
         # self.num_hand_dofs = 20
 
         # buffers for position targets
@@ -187,6 +201,15 @@ class PandaGraspEnv(DirectRLEnv):
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
+        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+        stage = omni.usd.get_context().get_stage()
+        # add semantics for in-hand cube
+        prim = stage.GetPrimAtPath("/World/envs/env_0/object")
+        sem = Semantics.SemanticsAPI.Apply(prim, "Semantics")
+        sem.CreateSemanticTypeAttr()
+        sem.CreateSemanticDataAttr()
+        sem.GetSemanticTypeAttr().Set("class")
+        sem.GetSemanticDataAttr().Set("cube")
         # # add ground plane
         # spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate (no need to filter for this environment)
@@ -194,9 +217,66 @@ class PandaGraspEnv(DirectRLEnv):
         # add articulation to scene - we must register to scene to randomize with EventManager
         self.scene.articulations["robot"] = self.hand
         self.scene.rigid_objects["object"] = self.object
+        self.scene.sensors["tiled_camera"] = self._tiled_camera
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=200.0, color=(0.75, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+    def _compute_image_observations(self):
+        # generate ground truth keypoints for in-hand cube
+        compute_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1), out=self.gt_keypoints)
+
+        object_pose = torch.cat([self.object_pos, self.gt_keypoints.view(-1, 24)], dim=-1)
+
+        # train CNN to regress on keypoint positions
+        pose_loss, embeddings = self.feature_extractor.step(
+            self._tiled_camera.data.output["rgb"],
+            self._tiled_camera.data.output["depth"],
+            self._tiled_camera.data.output["semantic_segmentation"][..., :3],
+            object_pose,
+        )
+
+        self.embeddings = embeddings.clone().detach()
+        # compute keypoints for goal cube
+        compute_keypoints(
+            pose=torch.cat((torch.zeros_like(self.goal_pos), self.goal_rot), dim=-1), out=self.goal_keypoints
+        )
+
+        obs = torch.cat(
+            (
+                self.embeddings,
+                self.goal_keypoints.view(-1, 24),
+            ),
+            dim=-1,
+        )
+
+        # log pose loss from CNN training
+        if "log" not in self.extras:
+            self.extras["log"] = dict()
+        self.extras["log"]["pose_loss"] = pose_loss
+
+        return obs
+
+    def _compute_proprio_observations(self):
+        """Proprioception observations from physics."""
+        obs = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
+                self.cfg.vel_obs_scale * self.hand_dof_vel,
+                # goal
+                self.in_hand_pos,
+                self.goal_rot,
+                # fingertips
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
+                # actions
+                self.actions,
+            ),
+            dim=-1,
+        )
+        return obs
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -315,26 +395,22 @@ class PandaGraspEnv(DirectRLEnv):
             marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         )
 
-
+    def _compute_states(self):
+        """Asymmetric states for the critic."""
+        sim_states = self.compute_full_state()
+        state = torch.cat((sim_states, self.embeddings), dim=-1)
+        return state
+    
     def _get_observations(self) -> dict:
-        if self.cfg.asymmetric_obs:
-            self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
-                :, self.finger_bodies
-            ]
+        state_obs = self._compute_proprio_observations()
+        # vision observations from CMM
+        image_obs = self._compute_image_observations()
+        obs = torch.cat((state_obs, image_obs), dim=-1)
+        # asymmetric critic states
+        self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[:, self.finger_bodies]
+        state = self._compute_states()
 
-        if self.cfg.obs_type == "openai":
-            obs = self.compute_reduced_observations()
-        elif self.cfg.obs_type == "full":
-            obs = self.compute_full_observations()
-        else:
-            print("Unknown observations type!")
-
-        if self.cfg.asymmetric_obs:
-            states = self.compute_full_state()
-
-        observations = {"policy": obs}
-        if self.cfg.asymmetric_obs:
-            observations = {"policy": obs, "critic": states}
+        observations = {"policy": obs, "critic": state}
 
         # 当前 z 向量（单位长度）
         # z_axis = torch.tensor([0.0, 0.0, 0.1], device=self.device).expand(self.num_envs, 3)  # 线长0.1
@@ -878,3 +954,33 @@ def compute_rewards(
     "grab_bnot_aligned_bonus": grab_bnot_aligned.float() * -5.0,
     "action_penalty": action_penalty * action_penalty_scale,
 }
+
+@torch.jit.script
+def compute_keypoints(
+    pose: torch.Tensor,
+    num_keypoints: int = 8,
+    size: tuple[float, float, float] = (2 * 0.03, 2 * 0.03, 2 * 0.03),
+    out: torch.Tensor | None = None,
+):
+    """Computes positions of 8 corner keypoints of a cube.
+
+    Args:
+        pose: Position and orientation of the center of the cube. Shape is (N, 7)
+        num_keypoints: Number of keypoints to compute. Default = 8
+        size: Length of X, Y, Z dimensions of cube. Default = [0.06, 0.06, 0.06]
+        out: Buffer to store keypoints. If None, a new buffer will be created.
+    """
+    num_envs = pose.shape[0]
+    if out is None:
+        out = torch.ones(num_envs, num_keypoints, 3, dtype=torch.float32, device=pose.device)
+    else:
+        out[:] = 1.0
+    for i in range(num_keypoints):
+        # which dimensions to negate
+        n = [((i >> k) & 1) == 0 for k in range(3)]
+        corner_loc = ([(1 if n[k] else -1) * s / 2 for k, s in enumerate(size)],)
+        corner = torch.tensor(corner_loc, dtype=torch.float32, device=pose.device) * out[:, i, :]
+        # express corner position in the world frame
+        out[:, i, :] = pose[:, :3] + quat_apply(pose[:, 3:7], corner)
+
+    return out
