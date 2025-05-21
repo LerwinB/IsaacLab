@@ -42,6 +42,17 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Repose-Cube-Franka-Vision-Direct-v0",
+    entry_point=f"{inhand_task_entry}.panda_grasp_vision_env:PandaGraspVisionEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{inhand_task_entry}.panda_grasp_vision_env:FrankaPandaVisionEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FrankaHandVisionFFPPORunnerCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_vision_cfg.yaml",
+    },
+)
+
+gym.register(
     id="Isaac-Repose-Cube-Franka-OpenAI-FF-Direct-v0",
     entry_point=f"{inhand_task_entry}.hand_grasp_env:HandGraspEnv",
     disable_env_checker=True,
@@ -66,7 +77,7 @@ gym.register(
 ### Vision
 
 gym.register(
-    id="Isaac-Repose-Cube-Franka-Vision-Direct-v0",
+    id="Isaac-Repose-Cube-Franka1-Vision-Direct-v0",
     entry_point=f"{__name__}.Franka_hand_vision_env:FrankaHandVisionEnv",
     disable_env_checker=True,
     kwargs={

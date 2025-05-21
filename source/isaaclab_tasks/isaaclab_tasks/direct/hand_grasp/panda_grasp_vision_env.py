@@ -39,6 +39,8 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import isaaclab.sim as sim_utils
 from ..franka_hand.feature_extractor import FeatureExtractor, FeatureExtractorCfg
+from isaaclab_tasks.direct.franka_hand.franka_panda_env_cfg import FrankaPandaEnvCfg
+import imageio
 
 if TYPE_CHECKING:
     from isaaclab_tasks.direct.franka_hand.franka_hand_env_cfg import FrankaHandEnvCfg
@@ -52,10 +54,10 @@ class FrankaPandaVisionEnvCfg(FrankaPandaEnvCfg):
     # camera
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=(0, -0.35, 1.0), rot=(0.7071, 0.0, 0.7071, 0.0), convention="world"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(1.0, 0, 1.5), rot=(0.573576, 0.0, 0.819152, 0.0), convention="world"),
         data_types=["rgb", "depth", "semantic_segmentation"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
+            focal_length=27.0, focus_distance=1000.0, horizontal_aperture=20.955, clipping_range=(0.1, 5.0)
         ),
         width=120,
         height=120,
@@ -63,8 +65,8 @@ class FrankaPandaVisionEnvCfg(FrankaPandaEnvCfg):
     feature_extractor = FeatureExtractorCfg()
 
     # env
-    observation_space = 164 + 27  # state observation + vision CNN embedding
-    state_space = 187 + 27  # asymettric states + vision CNN embedding
+    observation_space = 109  # state observation + vision CNN embedding
+    state_space = 114  # asymettric states + vision CNN embedding
 
 
 @configclass
@@ -76,7 +78,7 @@ class FrankaPandaVisionEnvPlayCfg(FrankaPandaVisionEnvCfg):
 
 
 
-class PandaGraspVisonEnv(DirectRLEnv):
+class PandaGraspVisionEnv(DirectRLEnv):
     cfg: FrankaPandaVisionEnvCfg
 
     def __init__(self, cfg: FrankaPandaVisionEnvCfg, render_mode: str | None = None, **kwargs):
@@ -219,7 +221,7 @@ class PandaGraspVisonEnv(DirectRLEnv):
         self.scene.rigid_objects["object"] = self.object
         self.scene.sensors["tiled_camera"] = self._tiled_camera
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+        light_cfg = sim_utils.DomeLightCfg(intensity=300.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _compute_image_observations(self):
@@ -382,18 +384,18 @@ class PandaGraspVisonEnv(DirectRLEnv):
             root_pose_w[:, 0:3], root_pose_w[:, 3:7],
             self.ee_pos_target, self.ee_quat
         )
-        self.ee_marker.visualize(ee_target, ee_quat_target,
-            marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
-        )
-        object_pos,object_quat = combine_frame_transforms(
-            root_pose_w[:, 0:3], root_pose_w[:, 3:7],
-            self.object_pos, self.ee_reach_target_quat)
-        self.target_marker.visualize(object_pos, object_quat,
-            marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
-        )
-        self.goal_markers.visualize(self.goal_pos + self.scene.env_origins, self.goal_rot,
-            marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
-        )
+        # self.ee_marker.visualize(ee_target, ee_quat_target,
+        #     marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        # )
+        # object_pos,object_quat = combine_frame_transforms(
+        #     root_pose_w[:, 0:3], root_pose_w[:, 3:7],
+        #     self.object_pos, self.ee_reach_target_quat)
+        # self.target_marker.visualize(object_pos, object_quat,
+        #     marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        # )
+        # self.goal_markers.visualize(self.goal_pos + self.scene.env_origins, self.goal_rot,
+        #     marker_indices=torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        # )
 
     def _compute_states(self):
         """Asymmetric states for the critic."""
@@ -412,6 +414,8 @@ class PandaGraspVisonEnv(DirectRLEnv):
 
         observations = {"policy": obs, "critic": state}
 
+        # rgb=self._tiled_camera.data.output["rgb"][0].cpu().numpy()
+        # imageio.imwrite("camera_view.png", (rgb * 255).astype("uint8"))
         # 当前 z 向量（单位长度）
         # z_axis = torch.tensor([0.0, 0.0, 0.1], device=self.device).expand(self.num_envs, 3)  # 线长0.1
         # ee_z_vec = quat_apply(self.ee_quat, z_axis)
