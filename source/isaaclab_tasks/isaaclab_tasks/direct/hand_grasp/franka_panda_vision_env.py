@@ -24,13 +24,13 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply
 
 # from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv, unscale
-from isaaclab_tasks.direct.hand_grasp.hand_grasp_env import HandGraspEnv, unscale
-from .feature_extractor import FeatureExtractor, FeatureExtractorCfg
-from .franka_hand_env_cfg import FrankaHandEnvCfg
+from .panda_grasp_env import PandaGraspEnv, unscale
+from ..franka_hand.feature_extractor import FeatureExtractor, FeatureExtractorCfg
+from ..franka_hand.franka_panda_env_cfg import FrankaPandaEnvCfg
 
 
 @configclass
-class FrankaHandVisionEnvCfg(FrankaHandEnvCfg):
+class FrankaPandaVisionEnvCfg(FrankaPandaEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1225, env_spacing=2.0, replicate_physics=True)
 
@@ -53,17 +53,17 @@ class FrankaHandVisionEnvCfg(FrankaHandEnvCfg):
 
 
 @configclass
-class FrankaHandVisionEnvPlayCfg(FrankaHandVisionEnvCfg):
+class FrankaPandaVisionEnvPlayCfg(FrankaPandaVisionEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=64, env_spacing=2.0, replicate_physics=True)
     # inference for CNN
     feature_extractor = FeatureExtractorCfg(train=False, load_checkpoint=True)
 
 
-class FrankaHandVisionEnv(HandGraspEnv):
-    cfg: FrankaHandVisionEnvCfg
+class FrankaHandVisionEnv(PandaGraspEnv):
+    cfg: FrankaPandaVisionEnvCfg
 
-    def __init__(self, cfg: FrankaHandVisionEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: FrankaPandaVisionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self.feature_extractor = FeatureExtractor(self.cfg.feature_extractor, self.device)
         # hide goal cubes
