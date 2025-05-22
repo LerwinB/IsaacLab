@@ -224,61 +224,6 @@ class PandaGraspVisionEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=300.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    def _compute_image_observations(self):
-        # generate ground truth keypoints for in-hand cube
-        compute_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1), out=self.gt_keypoints)
-
-        object_pose = torch.cat([self.object_pos, self.gt_keypoints.view(-1, 24)], dim=-1)
-
-        # train CNN to regress on keypoint positions
-        pose_loss, embeddings = self.feature_extractor.step(
-            self._tiled_camera.data.output["rgb"],
-            self._tiled_camera.data.output["depth"],
-            self._tiled_camera.data.output["semantic_segmentation"][..., :3],
-            object_pose,
-        )
-
-        self.embeddings = embeddings.clone().detach()
-        # compute keypoints for goal cube
-        compute_keypoints(
-            pose=torch.cat((torch.zeros_like(self.goal_pos), self.goal_rot), dim=-1), out=self.goal_keypoints
-        )
-
-        obs = torch.cat(
-            (
-                self.embeddings,
-                self.goal_keypoints.view(-1, 24),
-            ),
-            dim=-1,
-        )
-
-        # log pose loss from CNN training
-        if "log" not in self.extras:
-            self.extras["log"] = dict()
-        self.extras["log"]["pose_loss"] = pose_loss
-
-        return obs
-
-    def _compute_proprio_observations(self):
-        """Proprioception observations from physics."""
-        obs = torch.cat(
-            (
-                # hand
-                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
-                self.cfg.vel_obs_scale * self.hand_dof_vel,
-                # goal
-                self.in_hand_pos,
-                self.goal_rot,
-                # fingertips
-                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
-                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
-                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
-                # actions
-                self.actions,
-            ),
-            dim=-1,
-        )
-        return obs
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -637,6 +582,61 @@ class PandaGraspVisionEnv(DirectRLEnv):
         self.gripper_joint_pos = self.hand.data.joint_pos[:, self.finger_joint_ids]
         self.ee_reach_target_quat=self.align_gripper_y_to_nearest_cube_face(self.ee_quat, self.object_rot)
 
+    def _compute_image_observations(self):
+        # generate ground truth keypoints for in-hand cube
+        compute_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1), out=self.gt_keypoints)
+
+        object_pose = torch.cat([self.object_pos, self.gt_keypoints.view(-1, 24)], dim=-1)
+
+        # train CNN to regress on keypoint positions
+        pose_loss, embeddings = self.feature_extractor.step(
+            self._tiled_camera.data.output["rgb"],
+            self._tiled_camera.data.output["depth"],
+            self._tiled_camera.data.output["semantic_segmentation"][..., :3],
+            object_pose,
+        )
+
+        self.embeddings = embeddings.clone().detach()
+        # compute keypoints for goal cube
+        compute_keypoints(
+            pose=torch.cat((torch.zeros_like(self.goal_pos), self.goal_rot), dim=-1), out=self.goal_keypoints
+        )
+
+        obs = torch.cat(
+            (
+                self.embeddings,
+                self.goal_keypoints.view(-1, 24),
+            ),
+            dim=-1,
+        )
+
+        # log pose loss from CNN training
+        if "log" not in self.extras:
+            self.extras["log"] = dict()
+        self.extras["log"]["pose_loss"] = pose_loss
+
+        return obs
+
+    def _compute_proprio_observations(self):
+        """Proprioception observations from physics."""
+        obs = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
+                self.cfg.vel_obs_scale * self.hand_dof_vel,
+                # goal
+                self.in_hand_pos,
+                self.goal_rot,
+                # fingertips
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
+                # actions
+                self.actions,
+            ),
+            dim=-1,
+        )
+        return obs
 
     def compute_reduced_observations(self):
         # Per https://arxiv.org/pdf/1808.00177.pdf Table 2
