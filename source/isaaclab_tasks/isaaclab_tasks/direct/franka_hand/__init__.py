@@ -29,6 +29,8 @@ gym.register(
     },
 )
 
+
+# 微重力panda直接抓取
 gym.register(
     id="Isaac-Repose-Cube-Franka1-Direct-v0",
     entry_point=f"{inhand_task_entry}.panda_grasp_env:PandaGraspEnv",
@@ -74,7 +76,7 @@ gym.register(
     },
 )
 
-### Vision
+### Vision 抓取
 
 gym.register(
     id="Isaac-Repose-Cube-Franka1-Vision-Direct-v0",

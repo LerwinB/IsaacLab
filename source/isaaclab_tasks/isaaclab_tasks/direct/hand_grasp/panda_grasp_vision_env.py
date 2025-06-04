@@ -42,6 +42,7 @@ from ..franka_hand.feature_extractor import FeatureExtractor, FeatureExtractorCf
 from isaaclab_tasks.direct.franka_hand.franka_panda_env_cfg import FrankaPandaEnvCfg
 import imageio
 
+from isaaclab.assets import RigidObjectCfg
 if TYPE_CHECKING:
     from isaaclab_tasks.direct.franka_hand.franka_hand_env_cfg import FrankaHandEnvCfg
     from isaaclab_tasks.direct.franka_hand.franka_panda_env_cfg import FrankaPandaEnvCfg
@@ -50,7 +51,28 @@ if TYPE_CHECKING:
 class FrankaPandaVisionEnvCfg(FrankaPandaEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1225, env_spacing=2.0, replicate_physics=True)
-
+    
+    object_cfg: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/object",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
+            scale=(1.8, 0.8, 2.8),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                # kinematic_enabled=False,
+                disable_gravity=True,
+                # enable_gyroscopic_forces=True,
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=1,
+                max_angular_velocity=1000.0,
+                max_linear_velocity=1000.0,
+                # sleep_threshold=0.005,
+                # stabilization_threshold=0.0025,
+                max_depenetration_velocity=5.0,
+            ),
+            # mass_props=sim_utils.MassPropertiesCfg(density=567.0),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.25), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
     # camera
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
@@ -64,9 +86,11 @@ class FrankaPandaVisionEnvCfg(FrankaPandaEnvCfg):
     )
     feature_extractor = FeatureExtractorCfg()
 
+    
+
     # env
-    observation_space = 109  # state observation + vision CNN embedding
-    state_space = 114  # asymettric states + vision CNN embedding
+    observation_space = 129  # state observation + vision CNN embedding
+    state_space = 124  # asymettric states + vision CNN embedding
 
 
 @configclass
@@ -123,7 +147,7 @@ class PandaGraspVisionEnv(DirectRLEnv):
         # track goal resets
         self.reset_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # used to compare object position
-        self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
+        # self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
         # self.in_hand_pos[:, 2] -= 0.04
         # default goal positions
         self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
@@ -571,6 +595,11 @@ class PandaGraspVisionEnv(DirectRLEnv):
         self.object_velocities = self.object.data.root_vel_w
         self.object_linvel = self.object.data.root_lin_vel_w
         self.object_angvel = self.object.data.root_ang_vel_w
+        self.noisy_object_pos = add_obs_noise(self.object_pos, std=0.01)
+        self.noisy_object_rot = perturb_quaternion(self.object_rot, std=0.02)  # 若为四元数，建议改为 axis-angle 后加噪
+        self.noisy_object_linvel = add_obs_noise(self.object_linvel, std=0.02)
+        self.noisy_object_angvel = add_obs_noise(self.object_angvel, std=0.04)
+
             # ✅ 末端执行器 pose
         ee_pose = self.hand.data.body_state_w[:, self.ee_body_id, 0:7]
         self.ee_pos = ee_pose[:, 0:3] - self.scene.env_origins
@@ -624,8 +653,15 @@ class PandaGraspVisionEnv(DirectRLEnv):
                 # hand
                 unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
                 self.cfg.vel_obs_scale * self.hand_dof_vel,
+                self.ee_pos,
+                self.ee_quat,
+                # object with noise
+                self.noisy_object_pos,
+                self.noisy_object_rot,
+                self.noisy_object_linvel,
+                self.cfg.vel_obs_scale * self.noisy_object_angvel,
                 # goal
-                self.in_hand_pos,
+                self.goal_pos,
                 self.goal_rot,
                 # fingertips
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
@@ -696,6 +732,8 @@ class PandaGraspVisionEnv(DirectRLEnv):
                 # hand
                 unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
                 self.cfg.vel_obs_scale * self.hand_dof_vel,
+                self.ee_pos,
+                self.ee_quat,
                 # object
                 self.object_pos,
                 self.object_rot,
@@ -705,6 +743,7 @@ class PandaGraspVisionEnv(DirectRLEnv):
                 self.goal_pos,
                 self.goal_rot,
                 quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
+                self.object_pos - self.goal_pos,
                 # fingertips
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
                 self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
@@ -725,7 +764,7 @@ class PandaGraspVisionEnv(DirectRLEnv):
 
         Args:
             ee_quat: [N, 4] 当前末端姿态（四元数）
-            object_quat: [N, 4] 目标物体姿态
+            object_quat: [N, 4] 目标物体姿态2
 
         Returns:
             ee_quat_target: [N, 4] 对齐后的姿态（夹爪 y 轴朝向立方体最近一个面）
@@ -747,6 +786,7 @@ class PandaGraspVisionEnv(DirectRLEnv):
         # Step 3: 当前末端姿态下的 y 轴方向（夹爪开合方向）
         y_axis = torch.tensor([0.0, 1.0, 0.0], device=device).repeat(batch_size, 1)  # [N, 3]
         ee_y = quat_apply(ee_quat, y_axis).unsqueeze(1)  # [N, 1, 3]
+        object_y = quat_apply(object_quat, y_axis).unsqueeze(1)  # [N, 1, 3]
 
         # Step 4: 找到最接近的 face normal
         dot = torch.sum(ee_y * face_normals_world, dim=-1)  # [N, 6]
@@ -756,7 +796,8 @@ class PandaGraspVisionEnv(DirectRLEnv):
         target_y = face_normals_world[torch.arange(batch_size), best_idx]  # [N, 3]
 
         # Step 6: 构造最小旋转，将当前 y 轴对齐到 target_y
-        q_align = self.quat_from_to(ee_y.squeeze(1), target_y)  # [N, 4]
+        # q_align = self.quat_from_to(ee_y.squeeze(1), target_y)  # [N, 4]
+        q_align = self.quat_from_to(ee_y.squeeze(1), object_y.squeeze(1))  # [N, 4]
         ee_quat_target = quat_mul(q_align, ee_quat)        # [N, 4]
 
         return ee_quat_target
@@ -793,6 +834,19 @@ class PandaGraspVisionEnv(DirectRLEnv):
         quat_fallback = torch.cat([torch.zeros_like(w), alt_cross], dim=-1)  # [N, 4]
         quat = torch.where(near_zero.expand_as(quat_main), quat_fallback, quat_main)
         return torch.nn.functional.normalize(quat, dim=-1)
+    
+@torch.jit.script
+def add_obs_noise( x: torch.Tensor, std: float = 0.01)-> torch.Tensor:
+    return x + torch.randn_like(x) * std
+
+@torch.jit.script
+def perturb_quaternion(q: torch.Tensor, std: float = 0.01)-> torch.Tensor:
+    axis_angle_noise = torch.randn_like(q[:, :3]) * std
+    angle = torch.norm(axis_angle_noise, dim=-1, keepdim=True)
+    axis = axis_angle_noise / (angle + 1e-6)
+    delta_quat = torch.cat([torch.cos(angle / 2), torch.sin(angle / 2) * axis], dim=-1)
+    noisy_q = quat_mul(q, delta_quat)  # 你需要有 quat_mul 函数
+    return torch.nn.functional.normalize(noisy_q, dim=-1)
 
 
 @torch.jit.script
@@ -963,7 +1017,7 @@ def compute_rewards(
 def compute_keypoints(
     pose: torch.Tensor,
     num_keypoints: int = 8,
-    size: tuple[float, float, float] = (2 * 0.03, 2 * 0.03, 2 * 0.03),
+    size: tuple[float, float, float] = (0.108, 0.048, 0.168),
     out: torch.Tensor | None = None,
 ):
     """Computes positions of 8 corner keypoints of a cube.
