@@ -22,8 +22,10 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import TiledCamera, TiledCameraCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply
-
+from isaaclab.envs import DirectRLEnv
 # from isaaclab_tasks.direct.inhand_manipulation.inhand_manipulation_env import InHandManipulationEnv, unscale
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab_tasks.direct.hand_grasp.hand_grasp_env import HandGraspEnv, unscale
 from ..franka_hand.feature_extractor import FeatureExtractor, FeatureExtractorCfg
 from ..franka_hand.franka_hand_env_cfg import FrankaHandEnvCfg
@@ -60,17 +62,91 @@ class FrankaHandVisionEnvPlayCfg(FrankaHandVisionEnvCfg):
     feature_extractor = FeatureExtractorCfg(train=False, load_checkpoint=True)
 
 
-class FrankaHandVisionEnv(HandGraspEnv):
+class FrankaHandVisionEnv(DirectRLEnv):
     cfg: FrankaHandVisionEnvCfg
 
     def __init__(self, cfg: FrankaHandVisionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self.feature_extractor = FeatureExtractor(self.cfg.feature_extractor, self.device)
-        # hide goal cubes
-        self.goal_pos[:, :] = torch.tensor([-0.2, 0.1, 0.6], device=self.device)
-        # keypoints buffer
+        self.num_hand_dofs = self.hand.num_joints#27
         self.gt_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
         self.goal_keypoints = torch.ones(self.num_envs, 8, 3, dtype=torch.float32, device=self.device)
+        self.hand_dof_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
+        self.prev_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
+        self.cur_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
+
+        self.actuated_dof_indices = list()
+        for joint_name in cfg.actuated_joint_names:
+            self.actuated_dof_indices.append(self.hand.joint_names.index(joint_name))
+        self.actuated_dof_indices.sort()
+
+        self.finger_bodies = list()
+        for body_name in self.cfg.fingertip_body_names:
+            self.finger_bodies.append(self.hand.body_names.index(body_name))
+        self.finger_bodies.sort()
+        self.num_fingertips = len(self.finger_bodies)
+
+        self.arm_end_body = self.hand.body_names.index(self.cfg.armend_body_name[0])
+        # joint limits
+        joint_pos_limits = self.hand.root_physx_view.get_dof_limits().to(self.device)
+        self.hand_dof_lower_limits = joint_pos_limits[..., 0]
+        self.hand_dof_upper_limits = joint_pos_limits[..., 1]
+        # track goal resets
+        self.reset_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # used to compare object position
+        # self.in_hand_pos = self.object.data.default_root_state[:, 0:3].clone()
+        # self.in_hand_pos[:, 2] -= 0.04
+        # default goal positions
+        self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
+        self.goal_rot[:, 0] = 1.0
+        self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.goal_pos[:, :] = torch.tensor([0.4, 0.0, 0.5], device=self.device)
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
+        # unit tensors
+        self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+        self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
+
+        # ik controller
+        self.diff_ik_cfg = DifferentialIKControllerCfg(
+            command_type="pose",        # 控制位姿（而非 velocity）
+            use_relative_mode=True,    # 使用相对坐标控制
+            ik_method="dls"             # damped least squares 方法
+        )
+        self.ik_controller = DifferentialIKController(
+            cfg=self.diff_ik_cfg,
+            num_envs=self.num_envs,
+            device=self.device
+        )
+        self.pos_min = torch.tensor([0.3, -0.4, 0.3], device=self.device)
+        self.pos_max = torch.tensor([0.7, 0.4, 0.7], device=self.device)
+
+         # 识别末端和参与 IK 的关节
+        self.ik_entity_cfg = SceneEntityCfg(
+            name="robot",
+            joint_names=self.cfg.arm_joint_names,  # IK 控制的关节，例如 ["panda_joint1", ..., "panda_joint7"]
+            body_names=self.cfg.armend_body_name   # IK 控制的末端，例如 ["panda_hand"]
+        )
+        self.ik_entity_cfg.resolve(self.scene)
+
+        self.ik_joint_ids = self.ik_entity_cfg.joint_ids
+        self.arm_joint_ids = self.ik_joint_ids
+        self.finger_joint_ids = self.actuated_dof_indices
+        self.ee_body_id = self.ik_entity_cfg.body_ids[0]
+        self.ee_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.ee_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        self.ee_pos_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.ee_reach_target_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
+        self.initial_object_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+
+        # Jacobian 索引（如果是固定底座，PhysX 不包含 root link）
+        if self.hand.is_fixed_base:
+            self.ee_jacobi_idx = self.ee_body_id - 1
+        else:
+            self.ee_jacobi_idx = self.ee_body_id
+
 
     def _setup_scene(self):
         # add hand, in-hand object, and goal object
@@ -102,7 +178,7 @@ class FrankaHandVisionEnv(HandGraspEnv):
 
         object_pose = torch.cat([self.object_pos, self.gt_keypoints.view(-1, 24)], dim=-1)
 
-        # train CNN to regress on keypoint positions
+        # train CNN to regress no keypoint positions
         pose_loss, embeddings = self.feature_extractor.step(
             self._tiled_camera.data.output["rgb"],
             self._tiled_camera.data.output["depth"],
